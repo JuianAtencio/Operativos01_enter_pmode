@@ -1,0 +1,278 @@
+/**
+@author Erwin Meza Vega <emezav@gmail.com>
+@mainpage Paso a Modo Protegido IA-32
+
+@section project_start Información del Proyecto
+
+Este proyecto muestra la creación de un sector de arranque para procesadores
+IA-32 (Ver bootsect.S) y de un mini-kernel que es cargado por el código del 
+sector de arranque (ver start.S).
+
+@par Imagen de disco
+
+El sector de arranque y el kernel se compilan de forma independiente (Ver 
+archivos link_bootsector.ld y link_kernel.ld) y se almacenan concatenados en una
+imagen de disco floppy, que es usada como dispositivo de arranque por la BIOS
+(ver @ref bios_and_booting). La imagen tiene el siguiente formato:
+
+@verbatim
+     Imagen de Floppy
+     
+        +--- Primer sector de la imagen de disco (sector de arranque)
+        |
+        v
+    +-------+-------+-------+-------+-------+-------+-------+ ... ------+
+    |Sector |Sector |Sector |Sector |       |       |       | ... Sector|
+    |   0   |  1    |  2    | 3     |       |       |       | ... N     |
+    |       |       |       |       |       |       |       | ...       |
+    +-------+-------+-------+-------+-------+-------+-------+ ... ------+
+               ^
+               |
+               +--- Kernel (ocupa N sectores)
+@endverbatim
+
+El código del sector de arranque es copiado por la BIOS en la posición de 
+memoria 0x7C00  y recibe el control de la misma. Como se puede observar en la 
+siguiente gráfica, el sector de  arranque es copiado por la BIOS en medio de 
+la memoria disponible, y quedan dos regiones de memoria disponible antes y 
+después.
+
+@verbatim 
+	
+	    Primer MegaByte de Memoria RAM luego de inicializar la BIOS
+	    y luego de cargar el código del sector de arranque
+
+        +----------------------+ 0xFFFFF
+        |                      |
+        | Área de ROM          | En esta área se encuentra el código de la BIOS,
+        | (BIOS, VGA, etc.)    | y se encuentra mapeada la Memoria de Video.
+        |                      | 
+        |                      |
+        |                      | 0xA0000
+0x9FFFF +----------------------+
+        | Área extendida de    |
+        | datos de la BIOS     |
+        | (EBDA)               |
+        +----------------------+ 0x9FC00
+        |                      |
+        |                      |
+        |                      |
+        |   Memoria RAM        |  Aproximadamente 30 KB de memoria disponible
+        |   disponible         |                              
+        |                      |
+        |                      |
+        |                      | 0x7E00
+ 0x7DFF +----------------------+ 
+        | Código del sector de |  <-- La BIOS carga el código del sector de
+        | arranque (512 bytes) |      arranque aquí
+        +----------------------+ 0x7C00
+        |                      |
+        |                      |
+        |                      |
+        |  Memoria RAM         | Aproximadamente 600 KB de memoria disponible
+        |  disponible          |
+        |                      |
+        |                      |
+        |                      | 0x500
+   0x4FF+----------------------+
+        | Área de datos de la  |
+        | BIOS (BDA)           |
+        |                      |
+   0x3FF+----------------------+
+        |                      | 
+        |                      | 
+        | Tabla de Descriptores| 
+        | de Interrupción      | 
+        | (Configurada por la  |  
+        |  BIOS)               | 
+     0  +----------------------+ 
+
+@endverbatim
+
+@par Copia del código sector de arranque a otra posición de memoria
+
+Una vez que ha recibido el control de la BIOS, el sector de arranque se copia a
+sí mismo en la primera posición de memoria disponible (0x500), para dar espacio
+al kernel. Esto se ilustra en la siguiente gráfica:
+
+@verbatim 
+	
+	    Primer MegaByte de Memoria RAM luego de inicializar la BIOS
+	    y luego de cargar el código del sector de arranque
+
+        +----------------------+ 0xFFFFF
+        |                      |
+        | Área de ROM          | En esta área se encuentra el código de la BIOS,
+        | (BIOS, VGA, etc.)    | y se encuentra mapeada la Memoria de Video.
+        |                      | 
+        |                      |
+        |                      | 0xA0000
+0x9FFFF +----------------------+
+        | Área extendida de    |
+        | datos de la BIOS     |
+        | (EBDA)               |
+        +----------------------+ 0x9FC00
+        |                      |
+        |                      |
+        |                      |
+        |   Memoria RAM        |  Aproximadamente 30 KB de memoria disponible
+        |   disponible         |                              
+        |                      |
+        |                      |
+        |                      | 0x7E00
+ 0x7DFF +----------------------+ 
+        | Código del sector de | ----------+  1. El código del sector de  
+        | arranque (512 bytes) |           |     arranque se copia a sí mismo
+        +----------------------+ 0x7C00    |     a la posición de memoria 0x500
+        |                      |           |     y continúa su ejecución en esa
+        |                      |           |     localización
+        |                      |           |
+        |  Memoria RAM         |           |
+        |  disponible          |           |
+        |                      |           |
+        |                      |           |
+        |                      | 0x700     |
+  0x6FF +----------------------+           |
+        | Código del sector de | <---------+ 2. Este código recibe el control 
+        | arranque (512 bytes) | 0x500       y continúa con su ejecución en
+   0x4FF+----------------------+             esta nueva posición de memoria. 
+        | Área de datos de la  |
+        | BIOS (BDA)           |
+        |                      |
+   0x3FF+----------------------+
+        |                      | 
+        |                      | 
+        | Tabla de Descriptores| 
+        | de Interrupción      | 
+        | (Configurada por la  |  
+        |  BIOS)               | 
+     0  +----------------------+ 
+
+@endverbatim
+
+@par Carga del Kernel
+
+Luego, el código del sector de arranque se encarga de 'leer' un kernel en 
+formato binario que se encuentra almacenado a partir del segundo sector de la 
+imagen de disco. Este kernel se carga en la dirección de memoria 0x1000 (4 KB).
+
+El kernel almacena su tamaño en sectores en una variable que se encuentra
+definida exactamente en un desplazamiento de 4 bytes a partir su inicio.
+
+El código del sector de arranque lee el primer sector del kernel (el segundo 
+sector de la imagen de disco), usando los servicios de la BIOS y de este primer 
+sector obtiene el numero de sectores que debe leer para cargar el kernel 
+completamente. Luego, carga los N-1 sectores del kernel restantes (Ver start.S
+y link_kernel.ld)
+
+Con el fin de simplificar el proceso de lectura, se implementa dentro del 
+código del sector de arranque la rutina 'read_lba_from_floppy',
+que oculta los detalles de la geometria de un  disco floppy. Esta rutina
+que recibe como parámetro el número lineal de sector a leer, y la dirección de
+memoria (segmento:offset) en el cual se debe leer.
+
+El código del sector de arranque ejecuta un ciclo para leer los N - 1 sectores 
+restantes del kernel.
+
+@verbatim 
+	
+	    Primer MegaByte de Memoria RAM luego de la carga del
+	    kernel usando servicios de la BIOS
+
+        +----------------------+ 0xFFFFF
+        |                      |
+        | Área de ROM          | En esta área se encuentra el código de la BIOS,
+        | (BIOS, VGA, etc.)    | y se encuentra mapeada la Memoria de Video.
+        |                      | 
+        |                      |
+        |                      | 0xA0000
+0x9FFFF +----------------------+
+        | Área extendida de    |
+        | datos de la BIOS     |
+        | (EBDA)               |
+        +----------------------+ 0x9FC00
+        |                      |
+        |                      |
+        |                      |
+        |   Memoria RAM        |  Aproximadamente 30 KB de memoria disponible
+        |   disponible         |                              
+        |                      |
+        +----------------------+ <---------+  Kernel (N sectores).
+        | .....                |           |  Leído por el código del 
+        |                      |           |  sector de arranque a partir de la
+        +----------------------+           |  dirección lineal 0x1000.
+        | datos del kernel     |           |  El kernel recibe el control del
+        |                      |           |  código del sector de arranque 
+        +----------------------+           |  cuando ha terminado su carga.
+        | código del kernel    |           |                 
+        |                      |           |
+0x1000  +----------------------+ <---------+
+        |  Memoria RAM         |         ^  
+        |  disponible          |         |  
+        |                      |         |  El código del sector de arranque
+        |                      |         |  le pasa el control al kernel
+  0x6FF +----------------------+         |  una vez que ha terminado de 
+        | Código del sector de |         |  cargarlo en memoria.              
+        | arranque (512 bytes) | 0x500  -+                                 
+   0x4FF+----------------------+                                             
+        | Área de datos de la  |
+        | BIOS (BDA)           |
+        |                      |
+   0x3FF+----------------------+
+        |                      | 
+        |                      | 
+        | Tabla de Descriptores| 
+        | de Interrupción      | 
+        | (Configurada por la  |  
+        |  BIOS)               | 
+     0  +----------------------+ 
+
+@endverbatim
+
+Finalmente, el bootsector le transfiere el control al kernel por medio
+de una instruccion ljmp.
+
+@verbatim
+  ljmp 0x000 : 0x1000
+@endverbatim
+
+Cuando el kernel recibe el control, CS tiene el valor de 0x0000 e IP tiene el 
+valor de 0x1000.
+
+@par Ejecución de kernel
+
+El kernel (ver start.S) recibe el control del sector de arranque y realiza
+el siguiente proceso:
+- Pasar a modo protegido de 32 bits. Para ello debe realizar los siguientes
+  pasos, definidos por el manual de Intel para entrar a modo protegido:
+  - Deshabilitar las interrupciones
+  - Habilitar la línea de direcciones A20
+  - Cargar una GDT (definida dentro del mismo kernel)
+  - Habilitar el bit PE (Protection Enable) del registro CR0.
+  - Realizar un jmp para actualizar el registro de segmento CS
+  - Configurar los registros de segmento DS, ES, FS, GS y SS con selectores
+    válidos definidos en la GDT
+- Configurar una pila temporal
+- Probar si se pasó correctamente a modo protegido: Debido a que en la GDT se
+  configuraron dos segmentos de tipo Flat (plano), la dirección absoluta
+  0xB8000 permite acceder a la memoria de video de modo texto. Para ello
+  se imprime un caracter y una cadena de caracteres mediante un ciclo.
+
+Finalmente el kernel entra en un ciclo infinito, debido a que se debe mantener
+ocupado el procesador.
+ 
+@see <a href="pages.html">Páginas relacionadas</a>
+@see @ref development_environment
+@see @ref ia32_intro
+@see @ref ia32_assembly_basics
+@see @ref bios_and_booting
+@see @ref protected_mode_setup
+@see @ref gdt_page
+@see @ref text_video_memory
+
+*/
+/**
+
+ @include settings.dox
+
+*/
