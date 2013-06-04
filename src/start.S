@@ -7,6 +7,7 @@
  * @details
  * Este código pasa a modo protegido de 32 bits, y luego imprime un
  * caracter y una cadena en la pantalla.
+ *aja como vas
 
  * Luego, el kernel imprime un byte que se encuentra en su seccion de datos.
  * Si la carga del kernel fue correcta, debera imprimir kernel_byte luego del
